@@ -479,7 +479,10 @@ vrSpatialPlot(VRBlock_new2, group.by = "CellType", assay = "Assay1", crop = TRUE
 
 ## Alignment of Xenium and H&E
 
-In this use case, we will align **immunofluorescence (IF)** of the **Xenium In Situ** platform to an **H&E images** generated from the same sections as the Xenium. VoltRon provides built-in utilities to import images as spatial datasets where **tiles** are the spatial points. We will import both Xenium and H&E images into two separate VoltRon objects and overlay H&E images. 
+In this use case, we will align **immunofluorescence (IF)** of the **Xenium In Situ** platform to an **H&E images** generated from the same sections as the Xenium. VoltRon provides multiple approaches for this alignment:
+
+1. **Automated workflow** (recommended): Using the `addXeniumHE()` function for one-step automated alignment
+2. **Interactive workflow**: Using `registerSpatialData()` with the Shiny interface for manual control
 
 You can download the Xenium readout and the H&E image of the same tissue section from the [10x Genomics website](https://www.10xgenomics.com/products/xenium-in-situ/preview-dataset-human-breast) (specifically, import **In Situ Replicate 1** and **Supplemental: Post-Xenium H&E image (TIFF)**). 
 
@@ -493,21 +496,93 @@ if(!requireNamespace("rhdf5"))
   BiocManager::install("rhdf5")
 library(VoltRon)
 
-# import Xenium 
+# import Xenium
 Xen_R1 <- importXenium("Xenium_R1/outs", sample_name = "XeniumR1")
+```
 
-# import H&E image 
+<br>
+
+### Automated Workflow (Recommended)
+
+VoltRon provides the `addXeniumHE()` function to automatically align and add H&E images to Xenium data in a single step. This function handles the entire workflow automatically:
+
+```{r eval = FALSE, class.source="watch-out"}
+# Add H&E image with automated alignment - one simple step!
+Xen_R1 <- addXeniumHE(
+  Xen_R1,
+  "Xenium_FFPE_Human_Breast_Cancer_Rep1_he_image.tif",
+  channel_name = "H&E",
+  invert_dapi = TRUE,      # Recommended for better DAPI-to-H&E alignment
+  MAX_FEATURES = 500,      # Number of features to detect
+  GOOD_MATCH_PERCENT = 0.15,  # Match quality threshold
+  matcher = "FLANN",       # Fast matching algorithm
+  method = "Homography"    # Transformation method
+)
+```
+
+The function automatically:
+
+* Loads the H&E image
+* Extracts the DAPI channel from Xenium data
+* Performs automated feature-based registration using OpenCV
+* Warps the H&E image to align with Xenium coordinates
+* Adds the aligned H&E as a new channel
+
+You can now view the aligned H&E image:
+
+```{r eval = FALSE, class.source="watch-out"}
+# View aligned H&E
+vrImages(Xen_R1, channel = "H&E")
+
+# Check available channels
+vrImageChannelNames(Xen_R1)
+```
+
+And use it in spatial visualization:
+
+```{r eval = FALSE, class.source="watch-out"}
+# Visualize gene expression on H&E background
+vrSpatialFeaturePlot(Xen_R1, features = "ERBB2", channel = "H&E")
+```
+
+**Advanced Usage:** You can save and reuse alignment parameters for reproducible analysis:
+
+```{r eval = FALSE, class.source="watch-out"}
+# Create and save parameter set
+he_params <- getXeniumHEParams(
+  MAX_FEATURES = 1000,
+  GOOD_MATCH_PERCENT = 0.20,
+  matcher = "BRUTE-FORCE"
+)
+saveRDS(he_params, "he_alignment_params.rds")
+
+# Reuse parameters on other samples
+he_params <- readRDS("he_alignment_params.rds")
+Xen_R2 <- do.call(addXeniumHE, c(
+  list(Xen_R2, "Xenium_R2_he_image.tif"),
+  he_params
+))
+```
+
+<br>
+
+### Interactive Workflow
+
+For cases requiring manual control, VoltRon provides an interactive Shiny-based workflow. First, import the H&E image as a separate VoltRon object:
+
+```{r eval = FALSE, class.source="watch-out"}
+# import H&E image
 Xen_R1_image <- importImageData("Xenium_FFPE_Human_Breast_Cancer_Rep1_he_image.tif",
-                                sample_name = "XeniumR1image", 
+                                sample_name = "XeniumR1image",
                                 channel_names = "H&E")
 Xen_R1_image
 ```
 
 ```
-VoltRon Object 
-XeniumR1image: 
-  Layers: Section1 
-Assays: ImageData(Main) 
+VoltRon Object
+XeniumR1image:
+  Layers: Section1
+Assays: ImageData(Main)
 ```
 
 Lets take a look at the image of the Xen_R1_image object
@@ -520,11 +595,9 @@ vrImages(Xen_R1_image)
 
 <br>
 
-### Automated Image Alignment
+#### Interactive Automated Alignment
 
-We can use the **registerSpatialData** function to warp/align images across multiple VoltRon objects and define these aligned images additional channels of existing coordinate systems of assays in one of these VoltRon objects. 
-
-First we align the H&E image to the DAPI image of the Xenium replicate. Similar to the first use case, we need to negate the DAPI image and change the alignment of the image to match it with the H&E image. We can also scale the resolution of the H&E image to 9103.71x6768.63.
+Now we align the H&E image to the DAPI image of the Xenium replicate using the **registerSpatialData** function. This launches an interactive Shiny application where you can adjust parameters and visualize alignment quality. Similar to the first use case, we need to negate the DAPI image to better match it with the H&E image.
 
 ```{r eval = FALSE, class.source="watch-out"}
 xen_reg <- registerSpatialData(object_list = list(Xen_R1, Xen_R1_image))
@@ -534,31 +607,39 @@ xen_reg <- registerSpatialData(object_list = list(Xen_R1, Xen_R1_image))
 
 <br>
 
-Now we create a new channel for the existing coordinate system of the Xenium data. Here, the spatial key of the registered H&E image will be **main_reg**. We choose the destination of the registered image which is the first Assay of the Xenium data (i.e. **Assay1**). The original DAPI coordinate system, and we give a name for the new image/channel which is **H&E**.
+After alignment, we manually extract the registered H&E image and add it as a new channel to the Xenium data. The spatial key of the registered H&E image will be **main_reg**.
 
 ```{r eval = FALSE, class.source="watch-out"}
+# Extract registered H&E image
 Xen_R1_image_reg <- xen_reg$registered_spat[[2]]
-vrImages(Xen_R1[["Assay1"]], channel = "H&E") <- vrImages(Xenium_reg, name = "main_reg", channel = "H&E")
+
+# Add as new channel to Xenium object
+vrImages(Xen_R1[["Assay1"]], channel = "H&E") <-
+  vrImages(Xen_R1_image_reg, name = "main_reg", channel = "H&E")
 ```
 
-We can now observe the new channels (H&E) available for the Xenium assay using **vrImageChannelNames**.
+We can now observe the new channels available for the Xenium assay:
 
 ```{r eval = FALSE, class.source="watch-out"}
 vrImageChannelNames(Xen_R1)
 ```
 
 ```
-       Assay    Layer           Sample Spatial                                               Channels
-Assay1 GeoMx Section1 prolonged case 4    main scanimage,DNA,PanCK,CD45,Alpha Smooth Muscle Actin,H&E
+       Assay    Layer    Sample Spatial      Channels
+Assay1 Xenium Section1 XeniumR1    main     DAPI,H&E
 ```
 
-We can call the registered H&E image of the Xenium data or later put the aligned H&E when calling **vrSpatialPlot** or **vrSpatialFeaturePlot**. 
+View the registered H&E image:
 
 ```{r eval = FALSE, class.source="watch-out"}
-vrImages(Xen_R1, channel = "H&E", scale.perc = 5)
+vrImages(Xen_R1, channel = "H&E")
 ```
 
 <img width="70%" height="70%" src="https://bimsbstatic.mdc-berlin.de/landthaler/VoltRon/Package/images/registration_HE.png" class="center">
+
+<br>
+
+**Comparison:** The automated workflow (`addXeniumHE()`) combines all these steps into a single function call, while the interactive workflow provides more control through the Shiny interface for fine-tuning alignment parameters.
 
 <br>
 

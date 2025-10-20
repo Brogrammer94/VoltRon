@@ -1,0 +1,298 @@
+####
+# Automated Xenium H&E Alignment ####
+####
+
+#' Add H&E Image to Xenium Data with Automated Alignment
+#'
+#' This function automates the process of aligning a post-Xenium H&E image to
+#' Xenium DAPI immunofluorescence data and adding it as a new image channel.
+#' The alignment uses automated feature detection (SIFT) and matching (FLANN or
+#' BRUTE-FORCE) via OpenCV embedded in VoltRon.
+#'
+#' @param xenium_object A VoltRon object containing Xenium data with DAPI image
+#' @param he_image_path Path to the H&E image file (TIFF, PNG, etc.)
+#' @param assay_name Name of the Xenium assay to add H&E channel to. If NULL,
+#'   uses the first assay.
+#' @param channel_name Name for the new H&E channel (default: "H&E")
+#' @param image_name Name of the spatial/image system (default: "main")
+#' @param invert_dapi Whether to invert/negate the DAPI image for better
+#'   alignment with H&E (default: TRUE, recommended)
+#' @param GOOD_MATCH_PERCENT Percentage of good feature matches to use
+#'   (default: 0.15, range: 0-1)
+#' @param MAX_FEATURES Maximum number of features to detect in each image
+#'   (default: 500)
+#' @param matcher Matching algorithm: "FLANN" (fast, approximate) or
+#'   "BRUTE-FORCE" (slower, exact) (default: "FLANN")
+#' @param method Transformation method: "Homography", "Homography+Non-Rigid",
+#'   "Affine+Non-Rigid", or "Non-Rigid" (default: "Homography")
+#' @param scale_he Scale factor for H&E image resolution (default: 1.0)
+#' @param scale_dapi Scale factor for DAPI image resolution (default: 1.0)
+#' @param rotate_dapi Rotation to apply to DAPI: "0", "90", "180", "270"
+#'   (default: "0")
+#' @param rotate_he Rotation to apply to H&E: "0", "90", "180", "270"
+#'   (default: "0")
+#' @param flipflop_dapi Flip operation for DAPI: "None", "Horizontal",
+#'   "Vertical" (default: "None")
+#' @param flipflop_he Flip operation for H&E: "None", "Horizontal", "Vertical"
+#'   (default: "None")
+#' @param verbose Whether to print progress messages (default: TRUE)
+#'
+#' @return A VoltRon object with the aligned H&E image added as a new channel
+#'
+#' @details
+#' This function simplifies the workflow described in the VoltRon registration
+#' documentation. Instead of:
+#' \enumerate{
+#'   \item Importing H&E as a separate VoltRon object
+#'   \item Using the interactive Shiny app for registration
+#'   \item Manually extracting and assigning the registered image
+#' }
+#'
+#' You can now simply call:
+#' \preformatted{
+#'   xenium <- addXeniumHE(xenium, "path/to/he_image.tif")
+#' }
+#'
+#' The function automatically:
+#' \itemize{
+#'   \item Loads the H&E image
+#'   \item Extracts the DAPI channel from Xenium data
+#'   \item Performs automated feature-based registration
+#'   \item Warps the H&E image to align with Xenium coordinates
+#'   \item Adds the aligned H&E as a new channel
+#' }
+#'
+#' **Note:** DAPI images are typically inverted (negated) to align better with
+#' H&E histology images. This is controlled by \code{invert_dapi = TRUE}.
+#'
+#' @examples
+#' \dontrun{
+#' # Basic usage - automated alignment with defaults
+#' library(VoltRon)
+#' xenium <- importXenium("Xenium_R1/outs", sample_name = "Sample1")
+#' xenium <- addXeniumHE(xenium, "post_xenium_he_image.tif")
+#'
+#' # View the aligned H&E
+#' vrImages(xenium, channel = "H&E")
+#'
+#' # Advanced usage - customize alignment parameters
+#' xenium <- addXeniumHE(
+#'   xenium,
+#'   "post_xenium_he_image.tif",
+#'   channel_name = "HE",
+#'   MAX_FEATURES = 1000,
+#'   GOOD_MATCH_PERCENT = 0.20,
+#'   matcher = "BRUTE-FORCE",
+#'   method = "Homography+Non-Rigid"
+#' )
+#'
+#' # Visualize spatial features with H&E background
+#' vrSpatialFeaturePlot(xenium, features = "ERBB2", channel = "H&E")
+#' }
+#'
+#' @seealso
+#' \code{\link{importXenium}}, \code{\link{registerSpatialData}},
+#' \code{\link{vrImages}}
+#'
+#' @export
+addXeniumHE <- function(
+  xenium_object,
+  he_image_path,
+  assay_name = NULL,
+  channel_name = "H&E",
+  image_name = "main",
+  invert_dapi = TRUE,
+  GOOD_MATCH_PERCENT = 0.15,
+  MAX_FEATURES = 500,
+  matcher = "FLANN",
+  method = "Homography",
+  scale_he = 1.0,
+  scale_dapi = 1.0,
+  rotate_dapi = "0",
+  rotate_he = "0",
+  flipflop_dapi = "None",
+  flipflop_he = "None",
+  verbose = TRUE
+) {
+  # Validate inputs
+  if (!inherits(xenium_object, "VoltRon")) {
+    stop("xenium_object must be a VoltRon object")
+  }
+  if (!file.exists(he_image_path)) {
+    stop("H&E image file not found: ", he_image_path)
+  }
+
+  # Get assay name
+  if (is.null(assay_name)) {
+    assay_name <- vrAssayNames(xenium_object)[1]
+    if (verbose) {
+      message("Using assay: ", assay_name)
+    }
+  }
+
+  # Step 1: Load H&E image
+  if (verbose) {
+    message("Loading H&E image from: ", he_image_path)
+  }
+  he_image <- magick::image_read(he_image_path)
+
+  # Step 2: Extract DAPI image from Xenium object
+  if (verbose) {
+    message("Extracting DAPI image from Xenium data")
+  }
+  assay <- xenium_object[[assay_name]]
+  channel_names <- vrImageChannelNames(assay)
+
+  # Get the main channel (typically DAPI)
+  main_channel <- vrMainChannel(assay)
+  dapi_image <- vrImages(assay, channel = main_channel, as.raster = TRUE)
+
+  if (!inherits(dapi_image, "magick-image")) {
+    dapi_image <- magick::image_read(dapi_image)
+  }
+
+  if (verbose) {
+    message("Using channel: ", main_channel, " as reference")
+  }
+
+  # Step 3: Apply scaling if needed
+  if (scale_he != 1.0) {
+    if (verbose) {
+      message("Scaling H&E image by factor: ", scale_he)
+    }
+    he_image <- magick::image_scale(
+      he_image,
+      magick::geometry_size_percent(100 * scale_he)
+    )
+  }
+
+  if (scale_dapi != 1.0) {
+    if (verbose) {
+      message("Scaling DAPI image by factor: ", scale_dapi)
+    }
+    dapi_image <- magick::image_scale(
+      dapi_image,
+      magick::geometry_size_percent(100 * scale_dapi)
+    )
+  }
+
+  # Step 4: Perform automated registration
+  if (verbose) {
+    message("Performing automated registration using ", matcher, " with ", method)
+    message("  Max features: ", MAX_FEATURES)
+    message("  Match threshold: ", GOOD_MATCH_PERCENT)
+    message("  Invert DAPI: ", invert_dapi)
+  }
+
+  reg_result <- getRcppAutomatedRegistration(
+    ref_image = dapi_image,
+    query_image = he_image,
+    GOOD_MATCH_PERCENT = GOOD_MATCH_PERCENT,
+    MAX_FEATURES = MAX_FEATURES,
+    invert_query = FALSE,  # H&E is query, don't invert
+    invert_ref = invert_dapi,  # DAPI is reference, invert to match H&E
+    flipflop_query = flipflop_he,
+    flipflop_ref = flipflop_dapi,
+    rotate_query = rotate_he,
+    rotate_ref = rotate_dapi,
+    matcher = matcher,
+    method = method
+  )
+
+  # Check if registration was successful
+  if (is.na(reg_result$aligned_image)) {
+    stop(
+      "Automated registration failed. Try adjusting parameters:\n",
+      "  - Increase MAX_FEATURES (current: ", MAX_FEATURES, ")\n",
+      "  - Adjust GOOD_MATCH_PERCENT (current: ", GOOD_MATCH_PERCENT, ")\n",
+      "  - Try different matcher: ", ifelse(matcher == "FLANN", "BRUTE-FORCE", "FLANN"), "\n",
+      "  - Try different method (e.g., 'Homography+Non-Rigid')\n",
+      "  - Check image orientations (rotate_dapi, rotate_he, flipflop_*)"
+    )
+  }
+
+  if (verbose) {
+    message("Registration successful!")
+  }
+
+  # Step 5: Get the aligned H&E image
+  he_aligned <- reg_result$aligned_image
+
+  # Step 6: Add H&E as a new channel to the existing assay
+  if (verbose) {
+    message("Adding H&E channel to assay: ", assay_name)
+  }
+
+  # Get the spatial object
+  spatial_obj <- assay@spatial[[image_name]]
+
+  # Check if channel already exists
+  existing_channels <- names(spatial_obj@image)
+  if (channel_name %in% existing_channels) {
+    warning("Channel '", channel_name, "' already exists and will be replaced")
+  }
+
+  # Add the new channel
+  vrImages(xenium_object[[assay_name]], name = image_name, channel = channel_name) <-
+    he_aligned
+
+  if (verbose) {
+    message("H&E channel '", channel_name, "' successfully added!")
+    message("\nYou can now view it with:")
+    message("  vrImages(object, channel = '", channel_name, "')")
+    message("Or use it in spatial plots:")
+    message("  vrSpatialFeaturePlot(object, features = 'GENE', channel = '", channel_name, "')")
+  }
+
+  # Return the updated object
+  return(xenium_object)
+}
+
+
+#' Get Xenium H&E Alignment Parameters
+#'
+#' Helper function to create a parameter list for \code{addXeniumHE} that can
+#' be saved and reused for reproducible alignment.
+#'
+#' @param GOOD_MATCH_PERCENT Percentage of good feature matches
+#' @param MAX_FEATURES Maximum number of features to detect
+#' @param matcher Matching algorithm: "FLANN" or "BRUTE-FORCE"
+#' @param method Transformation method
+#' @param ... Additional parameters for \code{addXeniumHE}
+#'
+#' @return A named list of parameters
+#'
+#' @examples
+#' \dontrun{
+#' # Create parameter set
+#' params <- getXeniumHEParams(
+#'   MAX_FEATURES = 1000,
+#'   GOOD_MATCH_PERCENT = 0.20,
+#'   matcher = "BRUTE-FORCE"
+#' )
+#'
+#' # Save for later use
+#' saveRDS(params, "he_alignment_params.rds")
+#'
+#' # Reuse parameters
+#' params <- readRDS("he_alignment_params.rds")
+#' xenium <- do.call(addXeniumHE, c(list(xenium, "he_image.tif"), params))
+#' }
+#'
+#' @export
+getXeniumHEParams <- function(
+  GOOD_MATCH_PERCENT = 0.15,
+  MAX_FEATURES = 500,
+  matcher = "FLANN",
+  method = "Homography",
+  ...
+) {
+  params <- list(
+    GOOD_MATCH_PERCENT = GOOD_MATCH_PERCENT,
+    MAX_FEATURES = MAX_FEATURES,
+    matcher = matcher,
+    method = method,
+    ...
+  )
+  return(params)
+}
