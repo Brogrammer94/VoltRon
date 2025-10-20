@@ -508,6 +508,7 @@ VoltRon provides the `addXeniumHE()` function to automatically align and add H&E
 
 ```{r eval = FALSE, class.source="watch-out"}
 # Add H&E image with automated alignment - one simple step!
+# Supports TIFF, PNG, JPEG, SVS (whole slide), and other formats
 Xen_R1 <- addXeniumHE(
   Xen_R1,
   "Xenium_FFPE_Human_Breast_Cancer_Rep1_he_image.tif",
@@ -518,6 +519,10 @@ Xen_R1 <- addXeniumHE(
   matcher = "FLANN",       # Fast matching algorithm
   method = "Homography"    # Transformation method
 )
+
+# For SVS format (whole slide images):
+# Xen_R1 <- addXeniumHE(Xen_R1, "he_image.svs")
+# The function auto-detects SVS and selects appropriate resolution
 ```
 
 The function automatically:

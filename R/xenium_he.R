@@ -10,9 +10,13 @@
 #' BRUTE-FORCE) via OpenCV embedded in VoltRon.
 #'
 #' @param xenium_object A VoltRon object containing Xenium data with DAPI image
-#' @param he_image_path Path to the H&E image file (TIFF, PNG, etc.)
+#' @param he_image_path Path to the H&E image file. Supports multiple formats:
+#'   TIFF, PNG, JPEG, SVS (Aperio), and other formats supported by ImageMagick
+#'   or Bio-Formats.
 #' @param assay_name Name of the Xenium assay to add H&E channel to. If NULL,
 #'   uses the first assay.
+#' @param svs_resolution Resolution level for SVS/pyramidal images (default: NULL,
+#'   auto-selects). Lower numbers = higher resolution. Use 1-3 for typical alignment.
 #' @param channel_name Name for the new H&E channel (default: "H&E")
 #' @param image_name Name of the spatial/image system (default: "main")
 #' @param invert_dapi Whether to invert/negate the DAPI image for better
@@ -65,12 +69,31 @@
 #' **Note:** DAPI images are typically inverted (negated) to align better with
 #' H&E histology images. This is controlled by \code{invert_dapi = TRUE}.
 #'
+#' **SVS Support:** The function automatically detects and handles SVS (Aperio)
+#' whole slide imaging files. SVS files are multi-resolution pyramidal images:
+#' \itemize{
+#'   \item Resolution levels are auto-selected (typically level 2-3 for alignment)
+#'   \item Use \code{svs_resolution} parameter to manually select a level
+#'   \item Lower resolution numbers = higher image quality (but slower alignment)
+#'   \item Requires RBioFormats: \code{BiocManager::install('RBioFormats')}
+#' }
+#'
 #' @examples
 #' \dontrun{
 #' # Basic usage - automated alignment with defaults
 #' library(VoltRon)
 #' xenium <- importXenium("Xenium_R1/outs", sample_name = "Sample1")
 #' xenium <- addXeniumHE(xenium, "post_xenium_he_image.tif")
+#'
+#' # SVS format support (whole slide images)
+#' xenium <- addXeniumHE(xenium, "post_xenium_he_image.svs")
+#'
+#' # SVS with manual resolution selection
+#' xenium <- addXeniumHE(
+#'   xenium,
+#'   "post_xenium_he_image.svs",
+#'   svs_resolution = 2  # Level 2 (mid-resolution)
+#' )
 #'
 #' # View the aligned H&E
 #' vrImages(xenium, channel = "H&E")
@@ -94,11 +117,16 @@
 #' \code{\link{importXenium}}, \code{\link{registerSpatialData}},
 #' \code{\link{vrImages}}
 #'
+#' @importFrom magick image_read image_info image_scale geometry_size_percent
+#' @importFrom EBImage as.Image
+#' @importFrom grDevices as.raster
+#'
 #' @export
 addXeniumHE <- function(
   xenium_object,
   he_image_path,
   assay_name = NULL,
+  svs_resolution = NULL,
   channel_name = "H&E",
   image_name = "main",
   invert_dapi = TRUE,
@@ -122,6 +150,10 @@ addXeniumHE <- function(
     stop("H&E image file not found: ", he_image_path)
   }
 
+  # Check file format
+  is_svs <- grepl("\\.(svs|SVS)$", he_image_path)
+  is_ome_tiff <- grepl("\\.(ome\\.tiff|ome\\.tif)$", he_image_path)
+
   # Get assay name
   if (is.null(assay_name)) {
     assay_name <- vrAssayNames(xenium_object)[1]
@@ -133,8 +165,103 @@ addXeniumHE <- function(
   # Step 1: Load H&E image
   if (verbose) {
     message("Loading H&E image from: ", he_image_path)
+    if (is_svs) {
+      message("  Detected SVS format (whole slide image)")
+    } else if (is_ome_tiff) {
+      message("  Detected OME-TIFF format (pyramidal image)")
+    }
   }
-  he_image <- magick::image_read(he_image_path)
+
+  # Load image based on format
+  if (is_svs || is_ome_tiff) {
+    # SVS and OME-TIFF files require RBioFormats
+    if (!requireNamespace('RBioFormats', quietly = TRUE)) {
+      stop(
+        "SVS and OME-TIFF formats require the RBioFormats package.\n",
+        "Install it with: BiocManager::install('RBioFormats')"
+      )
+    }
+
+    # Read metadata to determine available resolutions
+    if (verbose) {
+      message("  Reading image metadata...")
+    }
+    meta <- RBioFormats::read.metadata(he_image_path)
+
+    # Auto-select resolution if not specified
+    if (is.null(svs_resolution)) {
+      # Get number of available resolutions
+      n_resolutions <- meta$resolutionCount
+
+      if (verbose) {
+        message("  Available resolution levels: ", n_resolutions)
+        for (i in 1:n_resolutions) {
+          res_meta <- RBioFormats::read.metadata(he_image_path)
+          width <- res_meta$sizeX[i]
+          height <- res_meta$sizeY[i]
+          message("    Level ", i, ": ", width, " x ", height)
+        }
+      }
+
+      # Auto-select: use mid-resolution for alignment (good balance)
+      # For SVS files: Level 1 is usually full res, level 2-3 are good for alignment
+      if (n_resolutions >= 3) {
+        svs_resolution <- 2  # Mid-resolution
+      } else if (n_resolutions == 2) {
+        svs_resolution <- 2  # Lower resolution
+      } else {
+        svs_resolution <- 1  # Only one resolution available
+      }
+
+      if (verbose) {
+        message("  Auto-selected resolution level: ", svs_resolution)
+        message("  (Use svs_resolution parameter to manually specify)")
+      }
+    } else {
+      if (verbose) {
+        message("  Using specified resolution level: ", svs_resolution)
+      }
+    }
+
+    # Read the image at the specified resolution
+    if (verbose) {
+      message("  Reading image at resolution level ", svs_resolution, "...")
+    }
+
+    img <- RBioFormats::read.image(
+      he_image_path,
+      series = 1,
+      resolution = svs_resolution,
+      normalize = TRUE
+    )
+
+    # Convert to magick image
+    img <- EBImage::as.Image(img)
+
+    # Check if RGB
+    if (length(d <- dim(img)) > 2 && d[3] == 3) {
+      # RGB image
+      he_image <- magick::image_read(grDevices::as.raster(img))
+    } else {
+      # Grayscale - convert to RGB
+      img <- img / max(img)
+      he_image <- magick::image_read(grDevices::as.raster(img))
+    }
+
+    if (verbose) {
+      img_info <- magick::image_info(he_image)
+      message("  Loaded image: ", img_info$width, " x ", img_info$height)
+    }
+
+  } else {
+    # Standard formats (TIFF, PNG, JPEG, etc.) - use magick directly
+    he_image <- magick::image_read(he_image_path)
+
+    if (verbose) {
+      img_info <- magick::image_info(he_image)
+      message("  Loaded image: ", img_info$width, " x ", img_info$height)
+    }
+  }
 
   # Step 2: Extract DAPI image from Xenium object
   if (verbose) {

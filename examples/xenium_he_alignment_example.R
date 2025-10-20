@@ -24,10 +24,42 @@ xenium <- importXenium(
 )
 
 # Add H&E image with automated alignment (one simple step!)
+# Works with TIFF, PNG, JPEG, SVS, and other formats
 xenium <- addXeniumHE(
   xenium,
   he_image_path = "path/to/post_xenium_he_image.tif",
   channel_name = "H&E",
+  verbose = TRUE
+)
+
+################################################################################
+# Example 1b: SVS Format (Whole Slide Images)
+################################################################################
+
+# SVS files are automatically detected and handled
+# The function will auto-select an appropriate resolution level
+xenium <- addXeniumHE(
+  xenium,
+  he_image_path = "path/to/post_xenium_he_image.svs",
+  verbose = TRUE
+)
+
+# Manual resolution selection for SVS files
+# Lower numbers = higher resolution (slower but more detailed)
+# Typical SVS files have 5-7 resolution levels
+xenium <- addXeniumHE(
+  xenium,
+  "path/to/post_xenium_he_image.svs",
+  svs_resolution = 2,  # Level 2 - good balance for alignment
+  verbose = TRUE
+)
+
+# For very large SVS files, use lower resolution for faster alignment
+xenium <- addXeniumHE(
+  xenium,
+  "path/to/large_he_image.svs",
+  svs_resolution = 3,  # Level 3 - faster alignment
+  MAX_FEATURES = 1000,
   verbose = TRUE
 )
 
@@ -193,5 +225,18 @@ vrSpatialFeaturePlot(xenium, features = "ERBB2", channel = "HE_highres")
 #
 # 7. Preprocessing: Adjust brightness/contrast of images before alignment if
 #    they differ significantly: modulateImage(xenium, brightness = 800)
+#
+# 8. SVS Format (Whole Slide Images):
+#    - SVS files are automatically detected and handled
+#    - Auto-selection chooses mid-resolution (level 2-3) for good performance
+#    - For very large SVS files (>10GB), use svs_resolution = 3 or 4
+#    - For highest quality alignment, use svs_resolution = 1 or 2
+#    - Check available resolutions with verbose = TRUE
+#    - Requires RBioFormats: BiocManager::install('RBioFormats')
+#
+# 9. Supported Formats:
+#    - Standard: TIFF, PNG, JPEG, BMP
+#    - Whole slide: SVS (Aperio), OME-TIFF (pyramidal)
+#    - Any format supported by ImageMagick or Bio-Formats
 #
 ################################################################################
