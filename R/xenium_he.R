@@ -178,15 +178,41 @@ addXeniumHE <- function(
     if (!requireNamespace('RBioFormats', quietly = TRUE)) {
       stop(
         "SVS and OME-TIFF formats require the RBioFormats package.\n",
-        "Install it with: BiocManager::install('RBioFormats')"
+        "Install it with: BiocManager::install('RBioFormats')\n\n",
+        "Alternative: Convert SVS to TIFF first. See: ?convertSVSWorkflow"
       )
     }
 
-    # Read metadata to determine available resolutions
+    # Try to read metadata
     if (verbose) {
       message("  Reading image metadata...")
     }
-    meta <- RBioFormats::read.metadata(he_image_path)
+
+    meta <- tryCatch({
+      RBioFormats::read.metadata(he_image_path)
+    }, error = function(e) {
+      # RBioFormats failed - provide helpful error message
+      stop(
+        "\n========================================\n",
+        "Failed to read SVS/OME-TIFF file with RBioFormats.\n",
+        "========================================\n\n",
+        "This can happen if:\n",
+        "1. The SVS file is corrupted or uses an unsupported variant\n",
+        "2. Bio-Formats cannot parse this specific file format\n",
+        "3. The file was created with an incompatible scanner\n\n",
+        "SOLUTION: Convert the SVS file to TIFF first.\n\n",
+        "Quick conversion methods:\n",
+        "  • QuPath (easiest): File → Export images → TIFF\n",
+        "  • ImageJ/FIJI: File → Open → Save As TIFF\n",
+        "  • Command-line (vips): vips copy input.svs output.tif\n",
+        "  • Python script: createSVSConversionScript()\n\n",
+        "For detailed instructions, run:\n",
+        "  convertSVSWorkflow()\n\n",
+        "After conversion, use the TIFF file:\n",
+        "  xenium <- addXeniumHE(xenium, 'converted_image.tif')\n\n",
+        "Original error: ", conditionMessage(e), "\n"
+      )
+    })
 
     # Auto-select resolution if not specified
     if (is.null(svs_resolution)) {
@@ -228,12 +254,26 @@ addXeniumHE <- function(
       message("  Reading image at resolution level ", svs_resolution, "...")
     }
 
-    img <- RBioFormats::read.image(
-      he_image_path,
-      series = 1,
-      resolution = svs_resolution,
-      normalize = TRUE
-    )
+    img <- tryCatch({
+      RBioFormats::read.image(
+        he_image_path,
+        series = 1,
+        resolution = svs_resolution,
+        normalize = TRUE
+      )
+    }, error = function(e) {
+      stop(
+        "\n========================================\n",
+        "Failed to read image data from SVS/OME-TIFF file.\n",
+        "========================================\n\n",
+        "Error occurred while reading resolution level ", svs_resolution, ".\n\n",
+        "Try:\n",
+        "1. Use a different resolution level (try svs_resolution = 1 or 3)\n",
+        "2. Convert the SVS to TIFF format (see ?convertSVSWorkflow)\n",
+        "3. Check if the file is corrupted\n\n",
+        "Original error: ", conditionMessage(e), "\n"
+      )
+    })
 
     # Convert to magick image
     img <- EBImage::as.Image(img)
